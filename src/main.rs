@@ -1,5 +1,6 @@
 //! OpenDown — IDM-style download manager: GUI (egui) + CLI.
 //! Original implementation; no IDM code or assets are used.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod engine;
 
@@ -30,6 +31,7 @@ pub struct AppCfg {
     pub grab_enabled: bool,
     pub grab_port: u16,
     pub grab_auto_start: bool,
+    pub minimize_to_tray: bool,
     pub classic_theme: bool,
     /// 0 = unlimited, 1 = 128 KB/s, 2 = 512 KB/s, 3 = 2 MB/s, 4 = custom
     pub speed_preset: usize,
@@ -52,6 +54,7 @@ impl Default for AppCfg {
             grab_enabled: true,
             grab_port: 10081,
             grab_auto_start: true,
+            minimize_to_tray: true,
             classic_theme: false,
             speed_preset: 0,
             custom_speed_kbps: 500.0,
@@ -701,6 +704,103 @@ fn handle_grab(
     Ok(())
 }
 
+// ===========================================================================
+// System tray + autostart
+// ===========================================================================
+
+enum TrayMsg {
+    Show,
+    Exit,
+}
+
+fn make_tray(tx: std::sync::mpsc::Sender<TrayMsg>) -> Result<tray_icon::TrayIcon, String> {
+    use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+    use tray_icon::{TrayIconBuilder, TrayIconEvent};
+
+    let menu = Menu::new();
+    let show_item = MenuItem::new("Show OpenDown", true, None);
+    let exit_item = MenuItem::new("Exit", true, None);
+    menu.append(&show_item).map_err(|e| e.to_string())?;
+    menu.append(&exit_item).map_err(|e| e.to_string())?;
+
+    let show_id = show_item.id().clone();
+    let exit_id = exit_item.id().clone();
+    let tx_menu = tx.clone();
+    MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
+        if e.id == show_id {
+            let _ = tx_menu.send(TrayMsg::Show);
+        } else if e.id == exit_id {
+            let _ = tx_menu.send(TrayMsg::Exit);
+        }
+    }));
+
+    let tx_icon = tx;
+    TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
+        if let TrayIconEvent::Click {
+            button: tray_icon::MouseButton::Left,
+            button_state: tray_icon::MouseButtonState::Up,
+            ..
+        } = e
+        {
+            let _ = tx_icon.send(TrayMsg::Show);
+        }
+    }));
+
+    let ico = make_icon();
+    let icon =
+        tray_icon::Icon::from_rgba(ico.rgba, ico.width, ico.height).map_err(|e| e.to_string())?;
+    TrayIconBuilder::new()
+        .with_menu(Box::new(menu))
+        .with_tooltip("OpenDown — Download Manager")
+        .with_icon(icon)
+        .with_menu_on_left_click(false)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+const AUTOSTART_VALUE: &str = "OpenDown";
+const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+
+fn autostart_enabled() -> bool {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(RUN_KEY)
+        .and_then(|k| k.get_value::<String, _>(AUTOSTART_VALUE))
+        .is_ok()
+}
+
+fn set_autostart(enable: bool) -> Result<(), String> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let (key, _) = hkcu.create_subkey(RUN_KEY).map_err(|e| e.to_string())?;
+    if enable {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let value = format!("\"{}\" --minimized", exe.display());
+        key.set_value(AUTOSTART_VALUE, &value)
+            .map_err(|e| e.to_string())?;
+    } else {
+        let _ = key.delete_value(AUTOSTART_VALUE);
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn attach_console() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn AttachConsole(dw_process_id: u32) -> i32;
+    }
+    const ATTACH_PARENT_PROCESS: u32 = 0xFFFF_FFFF;
+    unsafe {
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
+#[cfg(not(windows))]
+fn attach_console() {}
+
 fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
@@ -859,6 +959,10 @@ struct TurboApp {
     total_hist: Vec<f32>,
     sort: Option<(usize, bool)>,
     grab_rx: Option<std::sync::mpsc::Receiver<GrabJob>>,
+    tray: Option<tray_icon::TrayIcon>,
+    tray_rx: std::sync::mpsc::Receiver<TrayMsg>,
+    exit_now: bool,
+    start_minimized: bool,
     smoke: Option<(Instant, u64)>,
 }
 
@@ -887,6 +991,13 @@ impl TurboApp {
         } else {
             "Grabber disabled".to_string()
         };
+        let (tray_tx, tray_rx) = std::sync::mpsc::channel::<TrayMsg>();
+        let tray_result = make_tray(tray_tx);
+        let tray_status = match &tray_result {
+            Ok(_) => "System tray icon active".to_string(),
+            Err(e) => format!("System tray unavailable: {}", e),
+        };
+        let start_minimized = std::env::args().any(|a| a == "--minimized");
         let mut app = Self {
             mgr,
             selected: None,
@@ -899,6 +1010,7 @@ impl TurboApp {
             log: vec![
                 "OpenDown ready — click \"Add URL…\" to start.".to_string(),
                 grab_status,
+                tray_status,
             ],
             prev_states: Vec::new(),
             add_url: String::new(),
@@ -915,6 +1027,10 @@ impl TurboApp {
             total_hist: Vec::new(),
             sort: None,
             grab_rx,
+            tray: tray_result.ok(),
+            tray_rx,
+            exit_now: false,
+            start_minimized,
             smoke,
         };
         for _ in 0..app.mgr.tasks.len() {
@@ -2068,6 +2184,29 @@ impl TurboApp {
                 } else {
                     ui.label("Status: not listening");
                 }
+                ui.add_space(6.0);
+                ui.separator();
+                ui.label(egui::RichText::new("System").strong());
+                ui.checkbox(
+                    &mut self.mgr.cfg.minimize_to_tray,
+                    "Close / minimize to the system tray (keeps downloads running)",
+                );
+                let mut autostart = autostart_enabled();
+                if ui
+                    .checkbox(&mut autostart, "Start with Windows (minimized to tray)")
+                    .changed()
+                {
+                    match set_autostart(autostart) {
+                        Ok(()) => {
+                            if autostart {
+                                self.log("Autostart enabled (OpenDown will start minimized).");
+                            } else {
+                                self.log("Autostart disabled.");
+                            }
+                        }
+                        Err(e) => self.log(format!("Autostart change failed: {}", e)),
+                    }
+                }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Save").clicked() {
@@ -2090,8 +2229,51 @@ impl eframe::App for TurboApp {
         // smoke auto-close for automated testing
         if let Some((start, ms)) = self.smoke {
             if start.elapsed().as_millis() as u64 >= ms {
+                self.exit_now = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
+        }
+
+        // system tray events (show / exit)
+        while let Ok(msg) = self.tray_rx.try_recv() {
+            match msg {
+                TrayMsg::Show => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    ctx.request_repaint();
+                }
+                TrayMsg::Exit => {
+                    self.exit_now = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+        // start-at-boot launches hidden ("--minimized")
+        if self.start_minimized {
+            self.start_minimized = false;
+            if self.smoke.is_none() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            }
+        }
+        // close / minimize to tray
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.exit_now
+            && self.smoke.is_none()
+            && self.tray.is_some()
+            && self.mgr.cfg.minimize_to_tray
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+        if ctx.input(|i| i.viewport().minimized) == Some(true)
+            && !self.exit_now
+            && self.smoke.is_none()
+            && self.tray.is_some()
+            && self.mgr.cfg.minimize_to_tray
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
 
         self.poll_clipboard();
@@ -2156,6 +2338,7 @@ impl eframe::App for TurboApp {
 // ===========================================================================
 
 fn run_cli(args: &[String]) -> i32 {
+    attach_console();
     let mut url: Option<String> = None;
     let mut out = String::new();
     let mut filename: Option<String> = None;
@@ -2317,6 +2500,32 @@ fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 && args[1] == "--cli" {
         std::process::exit(run_cli(&args[2..]));
+    }
+    if args.iter().any(|a| a == "--autostart-on") {
+        attach_console();
+        match set_autostart(true) {
+            Ok(()) => {
+                println!("autostart: enabled");
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("autostart: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+    if args.iter().any(|a| a == "--autostart-off") {
+        attach_console();
+        match set_autostart(false) {
+            Ok(()) => {
+                println!("autostart: disabled");
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("autostart: {}", e);
+                std::process::exit(1);
+            }
+        }
     }
 
     eprintln!("[gui] starting eframe...");

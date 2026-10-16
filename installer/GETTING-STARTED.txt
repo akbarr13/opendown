@@ -35,6 +35,9 @@ Notes
     extensions" warning shown by the browser at startup is normal and harmless.
   * Firefox is not supported (.crx / unpacked is a Chromium format).
   * The extension talks to the app over localhost only - no data leaves your PC.
+  * Close or minimize hides OpenDown to the system tray - downloads keep running.
+    Right-click the tray icon for Show / Exit. "Start with Windows" toggle lives in
+    Options -> System.
   * opendown.exe is unsigned: Windows SmartScreen may warn on first run
     (click "More info" -> "Run anyway").
   * Uninstall via Windows Settings -> Apps, or uninstall.exe in this folder.

@@ -86,4 +86,5 @@ Section "Uninstall"
   DeleteRegKey HKCU "Software\Google\Chrome\Extensions\${EXTID}"
   DeleteRegKey HKCU "Software\OpenDown"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenDown"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "OpenDown"
 SectionEnd

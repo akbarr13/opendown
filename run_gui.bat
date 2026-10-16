@@ -1,8 +1,8 @@
 @echo off
-rem OpenDown GUI launcher
+rem OpenDown GUI launcher (starts the app detached, this console exits)
 cd /d "%~dp0"
 if exist "target\release\opendown.exe" (
-  "target\release\opendown.exe" %*
+  start "" "target\release\opendown.exe" %*
 ) else (
-  "target\debug\opendown.exe" %*
+  start "" "target\debug\opendown.exe" %*
 )

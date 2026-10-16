@@ -33,6 +33,8 @@ first run (More info → Run anyway).
   Last Try, Description — with per-connection segment bars, sortable headers, full-row
   selection, right-click context menu and resizable columns
 - Detail panel for the selected download, Add-URL dialog, options, log pane, clipboard URL monitor
+- System tray: close/minimize hides to the tray and downloads keep running, with an
+  optional "start with Windows" toggle
 - Original assets only: icons drawn in code, UI font **Varela Round** (SIL OFL)
 
 **CLI**
@@ -92,6 +94,7 @@ Config and task list live in `%APPDATA%\OpenDown\` (`config.json`, `tasks.json`)
 - HTTPS (native-tls) — sha256 verified
 - Grabber end-to-end: extension payload → task created → downloaded file matches source (sha256)
 - Installer: silent install → files + registry verified → app smoke test → clean uninstall
+- Tray: `scripts/tray_test.sh` — `--minimized` starts hidden, close-to-tray keeps the process alive
 
 ## License
 
