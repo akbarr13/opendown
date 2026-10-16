@@ -4,7 +4,7 @@ OpenDown - getting started
 Files
 -----
   opendown.exe                 the download manager (GUI + CLI)
-  extension\                   browser extension files (crx + unpacked)
+  extension\                   browser extension files (crx + unpacked folder)
   uninstall.exe                uninstaller
 
 Command line
@@ -18,18 +18,23 @@ Data & ports
 
 Browser extension
 -----------------
-The installer registered the OpenDown extension for Microsoft Edge and Google
-Chrome (current user - no admin needed).
+Browsers now block extensions that are installed outside their official stores
+(2024+ security policies), so the extension has to be enabled once, manually:
 
-  * Start (or restart) Edge / Chrome: the extension shows up on
-    edge://extensions / chrome://extensions. Enable it if the browser asks.
-  * Nothing showing? Run extension\browser-extension-setup.cmd and restart the
-    browser. (Same script with argument "remove" unregisters.)
-  * Firefox is not supported (.crx is a Chromium-only format).
-  * The extension talks to the app over localhost only - no data leaves your PC.
+  1. Open  edge://extensions   (or  chrome://extensions )
+  2. Turn ON "Developer mode"
+  3. Click "Load unpacked" and select this folder:
+       extension\unpacked
+     (extension\browser-extension-setup.cmd opens everything for you and puts
+      the folder path in your clipboard)
+  4. Keep "Developer mode" ON while using the extension.
 
 Notes
 -----
+  * The extension stays enabled while Developer mode is on. The "developer mode
+    extensions" warning shown by the browser at startup is normal and harmless.
+  * Firefox is not supported (.crx / unpacked is a Chromium format).
+  * The extension talks to the app over localhost only - no data leaves your PC.
   * opendown.exe is unsigned: Windows SmartScreen may warn on first run
     (click "More info" -> "Run anyway").
   * Uninstall via Windows Settings -> Apps, or uninstall.exe in this folder.

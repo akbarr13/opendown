@@ -12,9 +12,9 @@ echo "== installed tree =="
 ls _instest/ 2>/dev/null | head -12
 echo "--- extension/:"
 ls _instest/extension/ 2>/dev/null
-echo "== registry =="
-reg query "HKCU\Software\Microsoft\Edge\Extensions\manelgpcmclgjpecpncekbbbhjohndhp" 2>&1 | tail -3
-reg query "HKCU\Software\Google\Chrome\Extensions\manelgpcmclgjpecpncekbbbhjohndhp" 2>&1 | tail -3
+echo "== registry (browser auto-install must be ABSENT, meta keys must exist) =="
+reg query "HKCU\Software\Microsoft\Edge\Extensions\manelgpcmclgjpecpncekbbbhjohndhp" >/dev/null 2>&1 && echo "EDGE_KEY_PRESENT(!!)" || echo "EDGE_KEY_ABSENT_OK"
+reg query "HKCU\Software\Google\Chrome\Extensions\manelgpcmclgjpecpncekbbbhjohndhp" >/dev/null 2>&1 && echo "CHROME_KEY_PRESENT(!!)" || echo "CHROME_KEY_ABSENT_OK"
 reg query "HKCU\Software\OpenDown" 2>&1 | tail -3
 reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenDown" 2>&1 | tail -2
 echo "== smoke: installed exe =="

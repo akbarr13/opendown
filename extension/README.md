@@ -1,27 +1,29 @@
 # OpenDown Integration Module (browser extension)
 
-Browser integration for the **OpenDown** desktop download manager — auto-grabber, context-menu
-downloads and IDM-style download takeover. Chrome / Edge (Manifest V3).
+Browser integration for the **OpenDown** desktop download manager — auto-grabber,
+context-menu downloads and IDM-style download takeover. Chrome / Edge (Manifest V3).
 
-## Load (unpacked)
+## Install (current browsers)
 
-1. Open Chrome/Edge -> `chrome://extensions` (or `edge://extensions`).
-2. Enable **Developer mode** (top-right).
-3. Click **Load unpacked** and select this `extension` folder.
-4. Start the OpenDown app (grabber listens on `127.0.0.1:10081` by default; change in
-   Options or in the extension popup if needed).
+Browsers now block extensions installed outside their official stores (2024+ security
+policies) — off-store `.crx` installs and registry-based installs end up disabled with
+no way to enable them. The reliable path is **Load unpacked**:
 
-## Install from a packed `.crx` (drag & drop)
+1. Open `edge://extensions` (or `chrome://extensions`).
+2. Turn ON **Developer mode**.
+3. Click **Load unpacked** and select this `extension/` folder — or the `unpacked`
+   copy shipped with the installer at
+   `%LOCALAPPDATA%\Programs\OpenDown\extension\unpacked`.
+4. Keep the OpenDown app running while you browse (the grabber listens on
+   `127.0.0.1:10081` by default; change it in the app Options or in the popup).
 
-1. Download `opendown-extension-v1.0.0.crx` from the GitHub release.
-2. Open `edge://extensions` and turn on **Developer mode**.
-3. Drag the `.crx` file onto the page and confirm the prompt.
+Notes:
 
-| Browser | Works? |
-|---|---|
-| Microsoft Edge | ✅ Drag & drop `.crx` (Developer mode on) |
-| Google Chrome / most Chromium browsers | ❌ Off-store `.crx` installs were removed after Chrome 21 — use **Load unpacked** with the `.zip` release |
-| Firefox | ❌ Different format — load `manifest.json` temporarily via `about:debugging` (unsigned add-ons can't be installed permanently) |
+- The extension stays enabled while **Developer mode is ON** (Chrome 133+ disables
+  unpacked extensions when it is turned off).
+- A "developer mode extensions" warning at browser startup is normal and harmless.
+- The `.crx` package is kept for Chromium forks that still accept off-store installs.
+- Firefox is not supported (`.crx` / unpacked is a Chromium format).
 
 ## Features
 

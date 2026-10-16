@@ -63,24 +63,12 @@ Section "OpenDown application" SecApp
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenDown" "NoRepair" 1
 SectionEnd
 
-Section "Microsoft Edge integration" SecEdge
-  WriteRegStr HKCU "Software\Microsoft\Edge\Extensions\${EXTID}" "path" "$INSTDIR\extension\opendown-extension-v${EXTVERSION}.crx"
-  WriteRegStr HKCU "Software\Microsoft\Edge\Extensions\${EXTID}" "version" "${EXTVERSION}"
-SectionEnd
-
-Section "Google Chrome integration" SecChrome
-  WriteRegStr HKCU "Software\Google\Chrome\Extensions\${EXTID}" "path" "$INSTDIR\extension\opendown-extension-v${EXTVERSION}.crx"
-  WriteRegStr HKCU "Software\Google\Chrome\Extensions\${EXTID}" "version" "${EXTVERSION}"
-SectionEnd
-
 Section /o "Desktop shortcut" SecDesktop
   CreateShortCut "$DESKTOP\OpenDown.lnk" "$INSTDIR\opendown.exe"
 SectionEnd
 
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
   !insertmacro MUI_DESCRIPTION_TEXT ${SecApp} "Application, CLI, extension files and uninstaller. Required."
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecEdge} "Register the OpenDown extension with Microsoft Edge (applies on next browser start, no admin needed)."
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecChrome} "Register the OpenDown extension with Google Chrome (applies on next browser start)."
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
 Section "Uninstall"

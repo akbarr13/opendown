@@ -9,8 +9,8 @@ Multi-connection segmented downloads with crash-safe resume · egui GUI · CLI �
 ## Install
 
 - **Installer (recommended)** — `opendown-setup-*.exe` from [Releases](../../releases/latest).
-  Per-user install (no admin), Start Menu shortcut, and it registers the browser
-  extension for Edge & Chrome — restart your browser to activate it.
+  Per-user install (no admin), Start Menu shortcut, and it ships the browser extension
+  files (one manual "Load unpacked" step — see [Browser extension](#browser-extension)).
 - **Portable** — `opendown-*-windows-x64.exe` from [Releases](../../releases/latest);
   run it directly, no install.
 - **From source** — see [Build from source](#build-from-source).
@@ -46,13 +46,18 @@ first run (More info → Run anyway).
 
 ## Browser extension
 
-The installer registers the extension automatically (Edge & Chrome). Manual alternatives:
+Browsers block extensions installed outside their official stores (2024+ security
+policies) — there is no silent install path. The installer ships the extension files;
+enable it once, manually:
 
-- **Edge** — drag `opendown-extension-*.crx` onto `edge://extensions` (Developer mode on),
-  or **Load unpacked** the `extension/` folder.
-- **Chrome / other Chromium browsers** — **Load unpacked** the `extension/` folder
-  (off-store `.crx` installs have been blocked since Chrome 21).
-- **Firefox** — not supported (`.crx` is a Chromium format).
+1. Open `edge://extensions` (or `chrome://extensions`) and turn on **Developer mode**.
+2. Click **Load unpacked** and select the extension's `unpacked` folder
+   (`%LOCALAPPDATA%\Programs\OpenDown\extension\unpacked` when installed; in this
+   repo it is `extension/`). `extension\browser-extension-setup.cmd` opens both for you.
+
+The extension stays enabled while Developer mode is on; the startup "developer mode
+extensions" warning is harmless. `.crx` is provided for Chromium forks that still allow
+off-store installs; Firefox is not supported.
 
 The extension talks to the app over localhost only:
 
