@@ -1,0 +1,20 @@
+[package]
+name = "opendown"
+version = "0.1.0"
+edition = "2021"
+description = "OpenDown — IDM-style segmented download manager with egui GUI + CLI"
+license = "MIT"
+readme = "README.md"
+
+[dependencies]
+eframe = "0.29"
+egui = "0.29"
+egui_extras = "0.29"
+ureq = { version = "2.10", default-features = false, features = ["native-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rfd = "0.14"
+arboard = "3"
+
+[profile.release]
+opt-level = 2

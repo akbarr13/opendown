@@ -1,0 +1,15 @@
+# Rust build output
+/target/
+
+# Local logs and scratch captures
+*.log
+_*
+
+# Demo / test download folders
+/demo/
+/downloads_*/
+
+# OS junk
+Thumbs.db
+Desktop.ini
+.DS_Store

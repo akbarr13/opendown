@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  body { margin: 0; width: 380px; font-family: "Segoe UI", system-ui, sans-serif; background: #2b2b2b; color: #e8e8e8; font-size: 12.5px; }
+  header { padding: 10px 12px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #3a3a3a; }
+  #status { font-weight: 400; font-size: 11px; color: #99a0a8; }
+  #list { max-height: 320px; overflow: auto; }
+  .item { display: flex; gap: 8px; padding: 8px 12px; border-bottom: 1px solid #333; align-items: center; }
+  .item .meta { flex: 1; min-width: 0; }
+  .item .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item .sub { color: #99a0a8; font-size: 11px; }
+  button { background: #2a5cc2; color: #fff; border: 0; border-radius: 5px; padding: 4px 10px; cursor: pointer; }
+  button.ghost { background: #3a3a3a; color: #ddd; }
+  footer { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; border-top: 1px solid #3a3a3a; }
+  label { display: flex; gap: 6px; align-items: center; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  input[type=number] { width: 76px; background: #222; color: #eee; border: 1px solid #444; border-radius: 4px; padding: 2px 6px; }
+</style>
+</head>
+<body>
+  <header><span>⬇ OpenDown</span><span id="status">connecting…</span></header>
+  <div id="list"></div>
+  <footer>
+    <div class="row">
+      <button id="grab-all">Download all</button>
+      <button class="ghost" id="refresh">Refresh</button>
+    </div>
+    <label><input type="checkbox" id="takeover" /> Take over browser downloads (media/files)</label>
+    <div class="row">App port: <input type="number" id="port" min="1024" max="65535" /> <span id="portsave" style="color:#99a0a8"></span></div>
+  </footer>
+  <script src="popup.js"></script>
+</body>
+</html>

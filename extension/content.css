@@ -1,0 +1,12 @@
+#opendown-panel {
+  position: fixed; right: 16px; bottom: 16px; z-index: 2147483647;
+  background: #2b2b2b; color: #e8e8e8; border: 1px solid #3c3c3c; border-radius: 8px;
+  padding: 10px 12px; width: 220px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  font-family: "Segoe UI", system-ui, sans-serif; font-size: 12px;
+}
+#opendown-panel .oidm-title { font-weight: 600; font-size: 13px; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }
+#opendown-panel .oidm-close { cursor: pointer; opacity: 0.7; border: none; background: none; color: inherit; font-size: 13px; }
+#opendown-panel .oidm-btn { display: block; width: 100%; margin: 4px 0; padding: 6px 8px; border-radius: 5px; border: 1px solid #4a4a4a; background: #3a3a3a; color: #eee; cursor: pointer; font-size: 12px; }
+#opendown-panel .oidm-btn:hover { background: #454545; }
+#opendown-panel .oidm-ghost { background: transparent; }
+#opendown-panel .oidm-hint { margin-top: 6px; color: #99a0a8; font-size: 11px; min-height: 14px; }
