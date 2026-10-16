@@ -12,6 +12,8 @@ _*
 # Release artifacts & extension signing key
 /dist/
 *.pem
+/extension.crx
+/opendown-extension-*.crx
 
 # OS junk
 Thumbs.db
