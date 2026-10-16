@@ -37,6 +37,8 @@ only the general layout and workflow are inspired by it.
 
 - `run_gui.bat` — launch the GUI
 - `run_cli.bat "URL" -o DIR -n 16` — command-line download
+- `installer/opendown.nsi` — Windows setup script (per-user install; registers the
+  browser extension for Edge/Chrome on the next browser start)
 
 ## Browser extension (opendown\extension)
 

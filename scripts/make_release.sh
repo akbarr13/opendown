@@ -60,6 +60,18 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
 print("zip:", os.path.getsize(out), "bytes")
 PY
 
+echo "== setup installer =="
+MK=$(command -v makensis 2>/dev/null || true)
+if [ -z "$MK" ] && [ -x "$HOME/tools/w64devkit/bin/makensis.exe" ]; then
+  MK="$HOME/tools/w64devkit/bin/makensis.exe"
+fi
+if [ -n "$MK" ]; then
+  "$MK" /V2 installer/opendown.nsi || echo "WARN: makensis failed"
+  ls -la "dist/opendown-setup-v${VER}.exe" 2>/dev/null
+else
+  echo "makensis not found - skipping installer build"
+fi
+
 echo "== checksums =="
-cd dist && sha256sum opendown-v${VER}-windows-x64.exe opendown-extension-v${EXT_VER}.crx opendown-extension-v${EXT_VER}.zip > SHA256SUMS.txt && cat SHA256SUMS.txt
+cd dist && sha256sum opendown-v${VER}-windows-x64.exe opendown-setup-v${VER}.exe opendown-extension-v${EXT_VER}.crx opendown-extension-v${EXT_VER}.zip > SHA256SUMS.txt && cat SHA256SUMS.txt
 echo DONE

@@ -1,0 +1,35 @@
+OpenDown - getting started
+==========================
+
+Files
+-----
+  opendown.exe                 the download manager (GUI + CLI)
+  extension\                   browser extension files (crx + unpacked)
+  uninstall.exe                uninstaller
+
+Command line
+------------
+  opendown.exe --cli <URL> [-o DIR] [-f NAME] [-n CONNS] [--limit KB] [--resume]
+
+Data & ports
+------------
+  %APPDATA%\OpenDown\          config.json + tasks.json
+  Grabber endpoint:            http://127.0.0.1:10081   (POST /add, GET /ping)
+
+Browser extension
+-----------------
+The installer registered the OpenDown extension for Microsoft Edge and Google
+Chrome (current user - no admin needed).
+
+  * Start (or restart) Edge / Chrome: the extension shows up on
+    edge://extensions / chrome://extensions. Enable it if the browser asks.
+  * Nothing showing? Run extension\browser-extension-setup.cmd and restart the
+    browser. (Same script with argument "remove" unregisters.)
+  * Firefox is not supported (.crx is a Chromium-only format).
+  * The extension talks to the app over localhost only - no data leaves your PC.
+
+Notes
+-----
+  * opendown.exe is unsigned: Windows SmartScreen may warn on first run
+    (click "More info" -> "Run anyway").
+  * Uninstall via Windows Settings -> Apps, or uninstall.exe in this folder.
