@@ -7,6 +7,7 @@ public class WA {
   [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
   [StructLayout(LayoutKind.Sequential)] public struct R { public int L, T, Rt, B; }
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out R r);
+  [DllImport("user32.dll")] public static extern int GetWindowLongW(IntPtr h, int idx);
 }
 "@
 $h = [IntPtr]::new($Hwnd)
@@ -16,4 +17,5 @@ if ($Action -eq "close") { [void][WA]::PostMessageW($h, 0x0010, [IntPtr]::Zero, 
 $r = New-Object WA+R
 [void][WA]::GetWindowRect($h, [ref]$r)
 Write-Output ("RECT {0},{1} {2}x{3}" -f $r.L, $r.T, ($r.Rt-$r.L), ($r.B-$r.T))
+Write-Output ("EXSTYLE 0x{0:X}" -f [WA]::GetWindowLongW($h, -20))
 

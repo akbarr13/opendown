@@ -601,6 +601,7 @@ struct GrabReq {
     cookie: String,
 }
 
+#[derive(Clone)]
 struct GrabJob {
     url: String,
     referer: String,
@@ -841,6 +842,14 @@ mod win {
         fn SetWindowLongPtrW(hwnd: HWND, index: i32, value: isize) -> isize;
         fn SetForegroundWindow(hwnd: HWND) -> i32;
         fn GetShellWindow() -> HWND;
+        fn GetSystemMetrics(index: i32) -> i32;
+    }
+
+    const SM_CXSCREEN: i32 = 0;
+    const SM_CYSCREEN: i32 = 1;
+
+    pub fn screen_size() -> (f32, f32) {
+        unsafe { (GetSystemMetrics(SM_CXSCREEN) as f32, GetSystemMetrics(SM_CYSCREEN) as f32) }
     }
     #[link(name = "kernel32")]
     extern "system" {
@@ -1154,6 +1163,7 @@ struct TurboApp {
     dl_win_tx: std::sync::mpsc::Sender<(usize, DlAct)>,
     dl_win_rx: std::sync::mpsc::Receiver<(usize, DlAct)>,
     main_handle: Option<OwnedHandle>,
+    win_pos_done: std::collections::HashSet<egui::ViewportId>,
     win_states: HashMap<usize, DlWinState>,
     win_prev: HashMap<usize, Status>,
 }
@@ -1239,6 +1249,7 @@ impl TurboApp {
             dl_win_tx,
             dl_win_rx,
             main_handle,
+            win_pos_done: std::collections::HashSet::new(),
             win_states: HashMap::new(),
             win_prev: HashMap::new(),
         };
@@ -2483,6 +2494,7 @@ impl TurboApp {
 // IDM-style popup windows: confirm -> downloading -> complete (draggable file)
 // ===========================================================================
 
+#[derive(Clone)]
 struct ConfirmItem {
     id: u64,
     job: GrabJob,
@@ -2554,23 +2566,48 @@ fn open_folder_select(p: &std::path::Path) {
     }
 }
 
+fn popup_center(ctx: &egui::Context, win_w: f32, win_h: f32) -> egui::Pos2 {
+    let ppp = ctx.pixels_per_point();
+    let mon = ctx.input(|i| i.viewport().monitor_size).unwrap_or_else(|| {
+        #[cfg(windows)]
+        {
+            let (sw, sh) = win::screen_size();
+            egui::vec2(sw / ppp, sh / ppp)
+        }
+        #[cfg(not(windows))]
+        {
+            egui::vec2(1920.0, 1080.0)
+        }
+    });
+    let outer_w = win_w + 6.0 * ppp;
+    let outer_h = win_h + 29.0 * ppp;
+    egui::pos2((mon.x - outer_w) / 2.0, (mon.y - outer_h) / 2.0)
+}
+
 fn draw_popup_windows(app: &mut TurboApp, ctx: &egui::Context) {
     // ----- confirmation windows (deferred viewports) -----
-    for item in &app.pending_confirms {
+    let confirms: Vec<ConfirmItem> = app.pending_confirms.clone();
+    for item in &confirms {
         let vid = egui::ViewportId::from_hash_of(("confirm", item.id));
         let st = item.state.clone();
         let url_txt = item.job.url.clone();
         let tx = app.confirm_tx.clone();
         let id = item.id;
+        let mut vb = egui::ViewportBuilder::default()
+            .with_title("OpenDown — start download")
+            .with_inner_size([500.0, 190.0])
+            .with_resizable(false)
+            .with_always_on_top();
+        if app.win_pos_done.insert(vid) {
+            vb = vb.with_position(popup_center(ctx, 500.0, 190.0));
+        }
         ctx.show_viewport_deferred(
             vid,
-            egui::ViewportBuilder::default()
-                .with_title("OpenDown — start download")
-                .with_inner_size([470.0, 205.0])
-                .with_resizable(false),
+            vb,
             move |ctx, _class| {
                 ctx.request_repaint_after(std::time::Duration::from_millis(120));
-                if std::env::var("OPENDOWN_WINDEBUG").is_ok() {
+                let dbg = std::env::var("OPENDOWN_WINDEBUG").is_ok();
+                if dbg {
                     let n = ctx.input(|i| i.raw.events.len());
                     let hov = ctx.input(|i| i.pointer.hover_pos());
                     let ptr = ctx.input(|i| i.pointer.interact_pos());
@@ -2598,19 +2635,30 @@ fn draw_popup_windows(app: &mut TurboApp, ctx: &egui::Context) {
                 }
                 let mut ui_state = st.lock().unwrap();
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.strong("Start this download?");
-                    ui.add_space(6.0);
+                    ui.heading("Start this download?");
+                    ui.add_space(10.0);
                     egui::Grid::new("confirm_grid")
                         .num_columns(2)
-                        .spacing([8.0, 6.0])
+                        .spacing([10.0, 8.0])
+                        .min_col_width(66.0)
                         .show(ui, |ui| {
                             ui.label("File name:");
-                            ui.add(egui::TextEdit::singleline(&mut ui_state.fname).desired_width(330.0));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut ui_state.fname)
+                                    .desired_width(394.0),
+                            );
                             ui.end_row();
                             ui.label("Save to:");
                             ui.horizontal(|ui| {
-                                ui.add(egui::TextEdit::singleline(&mut ui_state.dir).desired_width(240.0));
-                                if ui.button("…").clicked() {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut ui_state.dir)
+                                        .desired_width(336.0),
+                                );
+                                if ui
+                                    .add_sized([30.0, 24.0], egui::Button::new("…"))
+                                    .on_hover_text("Choose folder")
+                                    .clicked()
+                                {
                                     if let Some(d) = rfd::FileDialog::new()
                                         .set_directory(ui_state.dir.clone())
                                         .pick_folder()
@@ -2621,12 +2669,25 @@ fn draw_popup_windows(app: &mut TurboApp, ctx: &egui::Context) {
                             });
                             ui.end_row();
                         });
-                    ui.add_space(4.0);
-                    ui.label(egui::RichText::new(&url_txt).small().weak());
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        let resp_dl = ui.button("⬇  Download");
-                        if std::env::var("OPENDOWN_WINDEBUG").is_ok() {
+                    ui.add_space(6.0);
+                    let url_resp = ui.add(
+                        egui::Label::new(egui::RichText::new(&url_txt).small()).truncate(),
+                    );
+                    url_resp.on_hover_text(&url_txt);
+                    ui.add_space(12.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add_sized([92.0, 26.0], egui::Button::new("Cancel"))
+                            .clicked()
+                        {
+                            let _ = tx.send((id, ConfirmAct::Cancel));
+                            ctx.request_repaint();
+                        }
+                        let resp_dl = ui.add_sized(
+                            [132.0, 26.0],
+                            egui::Button::new(egui::RichText::new("⬇  Download").strong()),
+                        );
+                        if dbg {
                             if let Ok(mut f) = std::fs::OpenOptions::new()
                                 .create(true)
                                 .append(true)
@@ -2642,7 +2703,7 @@ fn draw_popup_windows(app: &mut TurboApp, ctx: &egui::Context) {
                             }
                         }
                         if resp_dl.clicked() {
-                            if std::env::var("OPENDOWN_WINDEBUG").is_ok() {
+                            if dbg {
                                 if let Ok(mut f) = std::fs::OpenOptions::new()
                                     .create(true)
                                     .append(true)
@@ -2656,10 +2717,6 @@ fn draw_popup_windows(app: &mut TurboApp, ctx: &egui::Context) {
                                 id,
                                 ConfirmAct::Start(ui_state.fname.clone(), ui_state.dir.clone()),
                             ));
-                            ctx.request_repaint();
-                        }
-                        if ui.button("Cancel").clicked() {
-                            let _ = tx.send((id, ConfirmAct::Cancel));
                             ctx.request_repaint();
                         }
                     });
@@ -2717,27 +2774,46 @@ fn draw_popup_windows(app: &mut TurboApp, ctx: &egui::Context) {
             let vid = egui::ViewportId::from_hash_of(("dl", key));
             let task = t.clone();
             let tx = app.dl_win_tx.clone();
+            let mut vb = egui::ViewportBuilder::default()
+                .with_title("OpenDown — downloading")
+                .with_inner_size([460.0, 248.0])
+                .with_resizable(false)
+                .with_always_on_top();
+            if app.win_pos_done.insert(vid) {
+                vb = vb.with_position(popup_center(ctx, 460.0, 248.0));
+            }
             ctx.show_viewport_deferred(
                 vid,
-                egui::ViewportBuilder::default()
-                    .with_title("OpenDown — downloading")
-                    .with_inner_size([440.0, 195.0])
-                    .with_resizable(false),
+                vb,
                 move |ctx, _class| {
                     ctx.request_repaint_after(std::time::Duration::from_millis(120));
                     let v = task.view();
                     let st = v.status;
                     egui::CentralPanel::default().show(ctx, |ui| {
-                        ui.strong(&v.filename);
-                        ui.add_space(6.0);
-                        ui.add(egui::ProgressBar::new(v.progress).show_percentage());
-                        ui.add_space(4.0);
+                        let name_resp = ui.add(
+                            egui::Label::new(egui::RichText::new(&v.filename).strong()).truncate(),
+                        );
+                        name_resp.on_hover_text(&v.filename);
+                        ui.add_space(8.0);
+                        ui.add(
+                            egui::ProgressBar::new(v.progress)
+                                .desired_height(18.0)
+                                .show_percentage(),
+                        );
+                        ui.add_space(8.0);
                         egui::Grid::new("dl_grid")
                             .num_columns(2)
-                            .spacing([8.0, 4.0])
+                            .spacing([10.0, 6.0])
+                            .min_col_width(100.0)
                             .show(ui, |ui| {
                                 ui.label("Status:");
-                                ui.label(st.label());
+                                let st_txt = egui::RichText::new(st.label());
+                                let st_txt = if st == Status::Error {
+                                    st_txt.color(egui::Color32::from_rgb(230, 96, 96))
+                                } else {
+                                    st_txt
+                                };
+                                ui.label(st_txt);
                                 ui.end_row();
                                 ui.label("Size:");
                                 ui.label(human_size(v.size));
@@ -2753,35 +2829,59 @@ fn draw_popup_windows(app: &mut TurboApp, ctx: &egui::Context) {
                                 ui.label(human_eta(v.eta));
                                 ui.end_row();
                             });
-                        ui.add_space(6.0);
-                        ui.horizontal(|ui| {
+                        if !v.error.is_empty() {
+                            ui.add_space(4.0);
+                            let er = ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&v.error)
+                                        .small()
+                                        .color(egui::Color32::from_rgb(230, 96, 96)),
+                                )
+                                .truncate(),
+                            );
+                            er.on_hover_text(&v.error);
+                        }
+                        ui.add_space(12.0);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.add_sized([74.0, 26.0], egui::Button::new("Hide")).clicked() {
+                                let _ = tx.send((key, DlAct::Hide));
+                                ctx.request_repaint();
+                            }
+                            if ui
+                                .add_sized([92.0, 26.0], egui::Button::new("⏹  Stop"))
+                                .clicked()
+                            {
+                                let _ = tx.send((key, DlAct::Stop));
+                                ctx.request_repaint();
+                            }
                             match st {
                                 Status::Paused => {
-                                    if ui.button("▶  Resume").clicked() {
+                                    if ui
+                                        .add_sized([104.0, 26.0], egui::Button::new("▶  Resume"))
+                                        .clicked()
+                                    {
                                         let _ = tx.send((key, DlAct::Resume));
                                         ctx.request_repaint();
                                     }
                                 }
                                 Status::Error => {
-                                    if ui.button("↻  Retry").clicked() {
+                                    if ui
+                                        .add_sized([94.0, 26.0], egui::Button::new("↻  Retry"))
+                                        .clicked()
+                                    {
                                         let _ = tx.send((key, DlAct::Resume));
                                         ctx.request_repaint();
                                     }
                                 }
                                 _ => {
-                                    if ui.button("⏸  Pause").clicked() {
+                                    if ui
+                                        .add_sized([100.0, 26.0], egui::Button::new("⏸  Pause"))
+                                        .clicked()
+                                    {
                                         let _ = tx.send((key, DlAct::Pause));
                                         ctx.request_repaint();
                                     }
                                 }
-                            }
-                            if ui.button("⏹  Stop").clicked() {
-                                let _ = tx.send((key, DlAct::Stop));
-                                ctx.request_repaint();
-                            }
-                            if ui.button("Hide").clicked() {
-                                let _ = tx.send((key, DlAct::Hide));
-                                ctx.request_repaint();
                             }
                         });
                     });
@@ -2797,12 +2897,17 @@ fn draw_popup_windows(app: &mut TurboApp, ctx: &egui::Context) {
             let task = t.clone();
             let tx = app.dl_win_tx.clone();
             let handle = app.main_handle;
+            let mut vb = egui::ViewportBuilder::default()
+                .with_title("OpenDown — download complete")
+                .with_inner_size([470.0, 190.0])
+                .with_resizable(false)
+                .with_always_on_top();
+            if app.win_pos_done.insert(vid) {
+                vb = vb.with_position(popup_center(ctx, 470.0, 190.0));
+            }
             ctx.show_viewport_deferred(
                 vid,
-                egui::ViewportBuilder::default()
-                    .with_title("OpenDown — download complete")
-                    .with_inner_size([440.0, 225.0])
-                    .with_resizable(false),
+                vb,
                 move |ctx, _class| {
                     ctx.request_repaint_after(std::time::Duration::from_millis(120));
                     let v = task.view();
@@ -2823,21 +2928,21 @@ fn draw_popup_windows(app: &mut TurboApp, ctx: &egui::Context) {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         ui.horizontal(|ui| {
                             let (rect, resp) = ui.allocate_exact_size(
-                                egui::vec2(72.0, 72.0),
+                                egui::vec2(76.0, 76.0),
                                 egui::Sense::drag(),
                             );
                             {
                                 let painter = ui.painter();
                                 painter.rect_filled(
-                                    rect.shrink(4.0),
-                                    8.0,
+                                    rect.shrink(3.0),
+                                    10.0,
                                     egui::Color32::from_rgb(0x2a, 0x5c, 0xc2),
                                 );
                                 painter.text(
                                     rect.center(),
                                     egui::Align2::CENTER_CENTER,
                                     &ext,
-                                    egui::FontId::proportional(20.0),
+                                    egui::FontId::proportional(22.0),
                                     egui::Color32::WHITE,
                                 );
                             }
@@ -2906,34 +3011,53 @@ fn draw_popup_windows(app: &mut TurboApp, ctx: &egui::Context) {
                                     }
                                 }
                             }
-                            ui.add_space(12.0);
+                            ui.add_space(14.0);
                             ui.vertical(|ui| {
-                                ui.strong("Download complete");
-                                ui.label(&v.filename);
-                                if v.size.is_some() {
-                                    ui.label(human_size(v.size));
-                                }
-                                ui.label(
-                                    egui::RichText::new(
-                                        "Drag the icon to a folder to copy the file.",
-                                    )
-                                    .small()
-                                    .weak(),
+                                ui.heading("Download complete");
+                                ui.add_space(2.0);
+                                let name_resp = ui.add(
+                                    egui::Label::new(egui::RichText::new(&v.filename).strong())
+                                        .truncate(),
                                 );
+                                name_resp.on_hover_text(&v.filename);
+                                if v.size.is_some() {
+                                    ui.label(egui::RichText::new(human_size(v.size)).weak());
+                                }
+                                if let Some(p) = &v.path {
+                                    if let Some(folder) = p.parent() {
+                                        let fpath = folder.display().to_string().replace('/', "\\");
+                                        let fr = ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(fpath).small().weak(),
+                                            )
+                                            .truncate(),
+                                        );
+                                        fr.on_hover_text(p.display().to_string().replace('/', "\\"));
+                                    }
+                                }
                             });
                         });
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new("Drag the file icon to a folder to make a copy")
+                                .small()
+                                .weak(),
+                        );
                         ui.add_space(10.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("Open").clicked() {
-                                let _ = tx.send((key, DlAct::Open));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.add_sized([92.0, 26.0], egui::Button::new("Close")).clicked() {
+                                let _ = tx.send((key, DlAct::Dismiss));
                                 ctx.request_repaint();
                             }
-                            if ui.button("Open folder").clicked() {
+                            if ui
+                                .add_sized([112.0, 26.0], egui::Button::new("Open folder"))
+                                .clicked()
+                            {
                                 let _ = tx.send((key, DlAct::OpenFolder));
                                 ctx.request_repaint();
                             }
-                            if ui.button("Close").clicked() {
-                                let _ = tx.send((key, DlAct::Dismiss));
+                            if ui.add_sized([82.0, 26.0], egui::Button::new("Open")).clicked() {
+                                let _ = tx.send((key, DlAct::Open));
                                 ctx.request_repaint();
                             }
                         });

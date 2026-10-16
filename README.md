@@ -35,10 +35,10 @@ first run (More info → Run anyway).
 - Detail panel for the selected download, Add-URL dialog, options, log pane, clipboard URL monitor
 - System tray: close/minimize hides to the tray and downloads keep running, with an
   optional "start with Windows" toggle
-- IDM-style popup windows for downloads: a **confirmation window** per grabbed file
-  (review/edit name and folder first), a **live progress window** for downloads in
-  flight, and a **"Download complete" window** — drag its file icon straight into
-  Explorer or any folder to save a copy
+- IDM-style popup windows for downloads — always-on-top and centered on screen:
+  a **confirmation window** per grabbed file (review/edit name and folder first),
+  a **live progress window** for downloads in flight, and a **"Download complete"
+  window** — drag its file icon straight into Explorer or any folder to save a copy
 - Original assets only: icons drawn in code, UI font **Varela Round** (SIL OFL)
 
 **CLI**
