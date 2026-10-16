@@ -11,6 +11,18 @@ downloads and IDM-style download takeover. Chrome / Edge (Manifest V3).
 4. Start the OpenDown app (grabber listens on `127.0.0.1:10081` by default; change in
    Options or in the extension popup if needed).
 
+## Install from a packed `.crx` (drag & drop)
+
+1. Download `opendown-extension-v1.0.0.crx` from the GitHub release.
+2. Open `edge://extensions` and turn on **Developer mode**.
+3. Drag the `.crx` file onto the page and confirm the prompt.
+
+| Browser | Works? |
+|---|---|
+| Microsoft Edge | ✅ Drag & drop `.crx` (Developer mode on) |
+| Google Chrome / most Chromium browsers | ❌ Off-store `.crx` installs were removed after Chrome 21 — use **Load unpacked** with the `.zip` release |
+| Firefox | ❌ Different format — load `manifest.json` temporarily via `about:debugging` (unsigned add-ons can't be installed permanently) |
+
 ## Features
 
 - **Media sniffing** — watches network requests for video/audio/files, badge shows the count.

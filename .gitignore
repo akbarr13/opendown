@@ -9,6 +9,10 @@ _*
 /demo/
 /downloads_*/
 
+# Release artifacts & extension signing key
+/dist/
+*.pem
+
 # OS junk
 Thumbs.db
 Desktop.ini
