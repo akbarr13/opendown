@@ -9,6 +9,8 @@ use engine::{
     DEFAULT_CONNECTIONS, DEFAULT_UA,
 };
 use serde::{Deserialize, Serialize};
+use raw_window_handle::HasWindowHandle;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -31,6 +33,7 @@ pub struct AppCfg {
     pub grab_enabled: bool,
     pub grab_port: u16,
     pub grab_auto_start: bool,
+    pub confirm_downloads: bool,
     pub minimize_to_tray: bool,
     pub classic_theme: bool,
     /// 0 = unlimited, 1 = 128 KB/s, 2 = 512 KB/s, 3 = 2 MB/s, 4 = custom
@@ -54,6 +57,7 @@ impl Default for AppCfg {
             grab_enabled: true,
             grab_port: 10081,
             grab_auto_start: true,
+            confirm_downloads: true,
             minimize_to_tray: true,
             classic_theme: false,
             speed_preset: 0,
@@ -871,7 +875,7 @@ mod win {
                     let mut buf = vec![0u16; n as usize + 1];
                     GetWindowTextW(hwnd, buf.as_mut_ptr(), n + 1);
                     let s = String::from_utf16_lossy(&buf[..n as usize]);
-                    if s.starts_with("OpenDown") {
+                    if s.contains("Download Manager") {
                         f.found = hwnd;
                         return 0;
                     }
@@ -1143,6 +1147,15 @@ struct TurboApp {
     start_minimized: bool,
     autoshow: Option<(Instant, u64)>,
     smoke: Option<(Instant, u64)>,
+    pending_confirms: Vec<ConfirmItem>,
+    confirm_seq: u64,
+    confirm_tx: std::sync::mpsc::Sender<(u64, ConfirmAct)>,
+    confirm_rx: std::sync::mpsc::Receiver<(u64, ConfirmAct)>,
+    dl_win_tx: std::sync::mpsc::Sender<(usize, DlAct)>,
+    dl_win_rx: std::sync::mpsc::Receiver<(usize, DlAct)>,
+    main_handle: Option<OwnedHandle>,
+    win_states: HashMap<usize, DlWinState>,
+    win_prev: HashMap<usize, Status>,
 }
 
 impl TurboApp {
@@ -1181,6 +1194,9 @@ impl TurboApp {
             Err(e) => format!("System tray unavailable: {}", e),
         };
         let start_minimized = std::env::args().any(|a| a == "--minimized");
+        let (confirm_tx, confirm_rx) = std::sync::mpsc::channel();
+        let (dl_win_tx, dl_win_rx) = std::sync::mpsc::channel();
+        let main_handle = cc.window_handle().ok().map(|h| OwnedHandle(h.as_raw()));
         let mut app = Self {
             mgr,
             selected: None,
@@ -1216,6 +1232,15 @@ impl TurboApp {
             start_minimized,
             autoshow,
             smoke,
+            pending_confirms: Vec::new(),
+            confirm_seq: 0,
+            confirm_tx,
+            confirm_rx,
+            dl_win_tx,
+            dl_win_rx,
+            main_handle,
+            win_states: HashMap::new(),
+            win_prev: HashMap::new(),
         };
         for _ in 0..app.mgr.tasks.len() {
             app.prev_states.push(Status::Queued);
@@ -1286,6 +1311,49 @@ impl TurboApp {
         } else {
             Some(job.filename.clone())
         };
+        let dir = self.mgr.cfg.default_dir.clone();
+        let start_now = self.mgr.cfg.grab_auto_start;
+        self.start_grabbed(job, filename, dir, start_now);
+    }
+
+    fn queue_confirm(&mut self, job: GrabJob) {
+        let filename = if job.filename.trim().is_empty() {
+            let base = job
+                .url
+                .split(['?', '#'])
+                .next()
+                .unwrap_or("")
+                .trim_end_matches('/');
+            let last = base.rsplit('/').next().unwrap_or("").to_string();
+            if last.contains('.') {
+                last
+            } else {
+                String::new()
+            }
+        } else {
+            job.filename.clone()
+        };
+        self.confirm_seq += 1;
+        let id = self.confirm_seq;
+        let dir = self.mgr.cfg.default_dir.clone();
+        self.log(format!("Grabbed (waiting for confirmation): {}", job.url));
+        self.pending_confirms.push(ConfirmItem {
+            id,
+            job,
+            state: std::sync::Arc::new(std::sync::Mutex::new(ConfirmUi {
+                fname: filename,
+                dir,
+            })),
+        });
+    }
+
+    fn start_grabbed(
+        &mut self,
+        job: GrabJob,
+        filename: Option<String>,
+        dir: String,
+        start_now: bool,
+    ) {
         let referer = if job.referer.trim().is_empty() {
             None
         } else {
@@ -1296,12 +1364,11 @@ impl TurboApp {
         } else {
             Some(job.cookie.clone())
         };
-        let dir = self.mgr.cfg.default_dir.clone();
         let conns = self.mgr.cfg.connections;
         let t = self
             .mgr
             .add_task(&job.url, &dir, filename, conns, referer, cookie);
-        if self.mgr.cfg.grab_auto_start {
+        if start_now {
             t.start(false);
             self.log(format!("Grabbed (auto-start): {}", job.url));
         } else {
@@ -2360,6 +2427,10 @@ impl TurboApp {
                     &mut self.mgr.cfg.grab_auto_start,
                     "Auto-start grabbed downloads",
                 );
+                ui.checkbox(
+                    &mut self.mgr.cfg.confirm_downloads,
+                    "Show a confirmation window for grabbed downloads",
+                );
                 if self.grab_rx.is_some() {
                     ui.label(format!(
                         "Status: listening on http://127.0.0.1:{}",
@@ -2408,6 +2479,517 @@ impl TurboApp {
     }
 }
 
+// ===========================================================================
+// IDM-style popup windows: confirm -> downloading -> complete (draggable file)
+// ===========================================================================
+
+struct ConfirmItem {
+    id: u64,
+    job: GrabJob,
+    state: std::sync::Arc<std::sync::Mutex<ConfirmUi>>,
+}
+
+struct ConfirmUi {
+    fname: String,
+    dir: String,
+}
+
+#[derive(Clone, Copy)]
+struct OwnedHandle(raw_window_handle::RawWindowHandle);
+
+unsafe impl Send for OwnedHandle {}
+unsafe impl Sync for OwnedHandle {}
+
+impl raw_window_handle::HasWindowHandle for OwnedHandle {
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        unsafe { Ok(raw_window_handle::WindowHandle::borrow_raw(self.0)) }
+    }
+}
+
+enum ConfirmAct {
+    Start(String, String), // filename, dir
+    Cancel,
+}
+
+#[derive(Default)]
+struct DlWinState {
+    progress_closed: bool,
+    show_complete: bool,
+}
+
+enum DlAct {
+    Pause,
+    Resume,
+    Stop,
+    Hide,
+    Open,
+    OpenFolder,
+    Dismiss,
+}
+
+const DRAG_ICON: &[u8] = include_bytes!("../extension/icons/icon48.png");
+
+fn open_with_default(p: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", ""])
+            .arg(p)
+            .creation_flags(0x0800_0000)
+            .spawn();
+    }
+}
+
+fn open_folder_select(p: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("explorer")
+            .arg(format!("/select,{}", p.display()))
+            .creation_flags(0x0800_0000)
+            .spawn();
+    }
+}
+
+fn draw_popup_windows(app: &mut TurboApp, ctx: &egui::Context) {
+    // ----- confirmation windows (deferred viewports) -----
+    for item in &app.pending_confirms {
+        let vid = egui::ViewportId::from_hash_of(("confirm", item.id));
+        let st = item.state.clone();
+        let url_txt = item.job.url.clone();
+        let tx = app.confirm_tx.clone();
+        let id = item.id;
+        ctx.show_viewport_deferred(
+            vid,
+            egui::ViewportBuilder::default()
+                .with_title("OpenDown — start download")
+                .with_inner_size([470.0, 205.0])
+                .with_resizable(false),
+            move |ctx, _class| {
+                ctx.request_repaint_after(std::time::Duration::from_millis(120));
+                if std::env::var("OPENDOWN_WINDEBUG").is_ok() {
+                    let n = ctx.input(|i| i.raw.events.len());
+                    let hov = ctx.input(|i| i.pointer.hover_pos());
+                    let ptr = ctx.input(|i| i.pointer.interact_pos());
+                    let down = ctx.input(|i| i.pointer.primary_down());
+                    let pressed = ctx.input(|i| i.pointer.primary_pressed());
+                    let vp = ctx.viewport_id();
+                    let ppp = ctx.pixels_per_point();
+                    let evs: Vec<String> = ctx
+                        .input(|i| i.raw.events.iter().map(|e| format!("{:?}", e)).collect());
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(data_dir().join("win.log"))
+                    {
+                        use std::io::Write as _;
+                        let _ = writeln!(
+                            f,
+                            "confirm vp={:?} ppp={} events={} hover={:?} interact={:?} down={} pressed={}",
+                            vp, ppp, n, hov, ptr, down, pressed
+                        );
+                        for e in &evs {
+                            let _ = writeln!(f, "  EV {}", e);
+                        }
+                    }
+                }
+                let mut ui_state = st.lock().unwrap();
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.strong("Start this download?");
+                    ui.add_space(6.0);
+                    egui::Grid::new("confirm_grid")
+                        .num_columns(2)
+                        .spacing([8.0, 6.0])
+                        .show(ui, |ui| {
+                            ui.label("File name:");
+                            ui.add(egui::TextEdit::singleline(&mut ui_state.fname).desired_width(330.0));
+                            ui.end_row();
+                            ui.label("Save to:");
+                            ui.horizontal(|ui| {
+                                ui.add(egui::TextEdit::singleline(&mut ui_state.dir).desired_width(240.0));
+                                if ui.button("…").clicked() {
+                                    if let Some(d) = rfd::FileDialog::new()
+                                        .set_directory(ui_state.dir.clone())
+                                        .pick_folder()
+                                    {
+                                        ui_state.dir = d.display().to_string();
+                                    }
+                                }
+                            });
+                            ui.end_row();
+                        });
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(&url_txt).small().weak());
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        let resp_dl = ui.button("⬇  Download");
+                        if std::env::var("OPENDOWN_WINDEBUG").is_ok() {
+                            if let Ok(mut f) = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(data_dir().join("win.log"))
+                            {
+                                use std::io::Write as _;
+                                let ptr2 = ctx.input(|i| i.pointer.hover_pos());
+                                let _ = writeln!(
+                                    f,
+                                    "BTN dl rect={:?} hovered={} clicked={} ptr={:?}",
+                                    resp_dl.rect, resp_dl.hovered(), resp_dl.clicked(), ptr2
+                                );
+                            }
+                        }
+                        if resp_dl.clicked() {
+                            if std::env::var("OPENDOWN_WINDEBUG").is_ok() {
+                                if let Ok(mut f) = std::fs::OpenOptions::new()
+                                    .create(true)
+                                    .append(true)
+                                    .open(data_dir().join("win.log"))
+                                {
+                                    use std::io::Write as _;
+                                    let _ = writeln!(f, "BTN-DOWNLOAD-CLICKED");
+                                }
+                            }
+                            let _ = tx.send((
+                                id,
+                                ConfirmAct::Start(ui_state.fname.clone(), ui_state.dir.clone()),
+                            ));
+                            ctx.request_repaint();
+                        }
+                        if ui.button("Cancel").clicked() {
+                            let _ = tx.send((id, ConfirmAct::Cancel));
+                            ctx.request_repaint();
+                        }
+                    });
+                });
+                if ctx.input(|i| i.viewport().close_requested()) {
+                    let _ = tx.send((id, ConfirmAct::Cancel));
+                }
+            },
+        );
+    }
+    let mut cacts: Vec<(u64, ConfirmAct)> = Vec::new();
+    while let Ok(a) = app.confirm_rx.try_recv() {
+        cacts.push(a);
+    }
+    for (id, a) in cacts {
+        if let Some(pos) = app.pending_confirms.iter().position(|c| c.id == id) {
+            let item = app.pending_confirms.remove(pos);
+            match a {
+                ConfirmAct::Start(fname, dir) => {
+                    let filename = if fname.trim().is_empty() {
+                        None
+                    } else {
+                        Some(fname)
+                    };
+                    let dir = if dir.trim().is_empty() {
+                        app.mgr.cfg.default_dir.clone()
+                    } else {
+                        dir
+                    };
+                    app.start_grabbed(item.job, filename, dir, true);
+                }
+                ConfirmAct::Cancel => {
+                    app.log("Grab cancelled.");
+                }
+            }
+        }
+    }
+
+    // ----- per-task progress + complete windows -----
+    let tasks: Vec<Arc<DownloadTask>> = app.mgr.tasks.clone();
+    let mut live: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for t in &tasks {
+        let key = Arc::as_ptr(t) as usize;
+        live.insert(key);
+        let st = *t.status.lock().unwrap();
+        let prev = app.win_prev.insert(key, st);
+        let just_done = st == Status::Completed && prev.is_some() && prev != Some(Status::Completed);
+        let state = app.win_states.entry(key).or_default();
+        if just_done {
+            state.progress_closed = true;
+            state.show_complete = true;
+        }
+
+        if !matches!(st, Status::Completed | Status::Cancelled) && !state.progress_closed {
+            let vid = egui::ViewportId::from_hash_of(("dl", key));
+            let task = t.clone();
+            let tx = app.dl_win_tx.clone();
+            ctx.show_viewport_deferred(
+                vid,
+                egui::ViewportBuilder::default()
+                    .with_title("OpenDown — downloading")
+                    .with_inner_size([440.0, 195.0])
+                    .with_resizable(false),
+                move |ctx, _class| {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(120));
+                    let v = task.view();
+                    let st = v.status;
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.strong(&v.filename);
+                        ui.add_space(6.0);
+                        ui.add(egui::ProgressBar::new(v.progress).show_percentage());
+                        ui.add_space(4.0);
+                        egui::Grid::new("dl_grid")
+                            .num_columns(2)
+                            .spacing([8.0, 4.0])
+                            .show(ui, |ui| {
+                                ui.label("Status:");
+                                ui.label(st.label());
+                                ui.end_row();
+                                ui.label("Size:");
+                                ui.label(human_size(v.size));
+                                ui.end_row();
+                                ui.label("Downloaded:");
+                                ui.label(format!(
+                                    "{}  ({})",
+                                    human_size(Some(v.done)),
+                                    human_speed(v.speed)
+                                ));
+                                ui.end_row();
+                                ui.label("Time left:");
+                                ui.label(human_eta(v.eta));
+                                ui.end_row();
+                            });
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            match st {
+                                Status::Paused => {
+                                    if ui.button("▶  Resume").clicked() {
+                                        let _ = tx.send((key, DlAct::Resume));
+                                        ctx.request_repaint();
+                                    }
+                                }
+                                Status::Error => {
+                                    if ui.button("↻  Retry").clicked() {
+                                        let _ = tx.send((key, DlAct::Resume));
+                                        ctx.request_repaint();
+                                    }
+                                }
+                                _ => {
+                                    if ui.button("⏸  Pause").clicked() {
+                                        let _ = tx.send((key, DlAct::Pause));
+                                        ctx.request_repaint();
+                                    }
+                                }
+                            }
+                            if ui.button("⏹  Stop").clicked() {
+                                let _ = tx.send((key, DlAct::Stop));
+                                ctx.request_repaint();
+                            }
+                            if ui.button("Hide").clicked() {
+                                let _ = tx.send((key, DlAct::Hide));
+                                ctx.request_repaint();
+                            }
+                        });
+                    });
+                    if ctx.input(|i| i.viewport().close_requested()) {
+                        let _ = tx.send((key, DlAct::Hide));
+                    }
+                },
+            );
+        }
+
+        if state.show_complete && st == Status::Completed {
+            let vid = egui::ViewportId::from_hash_of(("done", key));
+            let task = t.clone();
+            let tx = app.dl_win_tx.clone();
+            let handle = app.main_handle;
+            ctx.show_viewport_deferred(
+                vid,
+                egui::ViewportBuilder::default()
+                    .with_title("OpenDown — download complete")
+                    .with_inner_size([440.0, 225.0])
+                    .with_resizable(false),
+                move |ctx, _class| {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(120));
+                    let v = task.view();
+                    let ext = if v.filename.contains('.') {
+                        v.filename
+                            .rsplit('.')
+                            .next()
+                            .unwrap_or("")
+                            .to_uppercase()
+                    } else {
+                        String::new()
+                    };
+                    let ext = if !ext.is_empty() && ext.len() <= 4 {
+                        ext
+                    } else {
+                        "FILE".to_string()
+                    };
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.horizontal(|ui| {
+                            let (rect, resp) = ui.allocate_exact_size(
+                                egui::vec2(72.0, 72.0),
+                                egui::Sense::drag(),
+                            );
+                            {
+                                let painter = ui.painter();
+                                painter.rect_filled(
+                                    rect.shrink(4.0),
+                                    8.0,
+                                    egui::Color32::from_rgb(0x2a, 0x5c, 0xc2),
+                                );
+                                painter.text(
+                                    rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    &ext,
+                                    egui::FontId::proportional(20.0),
+                                    egui::Color32::WHITE,
+                                );
+                            }
+                            if resp.hovered() {
+                                ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::Grab);
+                            }
+                            if std::env::var("OPENDOWN_WINDEBUG").is_ok() {
+                                if let Ok(mut f) = std::fs::OpenOptions::new()
+                                    .create(true)
+                                    .append(true)
+                                    .open(data_dir().join("win.log"))
+                                {
+                                    use std::io::Write as _;
+                                    let ptr2 = ctx.input(|i| i.pointer.hover_pos());
+                                    let _ = writeln!(
+                                        f,
+                                        "ICON rect={:?} hovered={} drag_started={} ptr={:?}",
+                                        resp.rect, resp.hovered(), resp.drag_started(), ptr2
+                                    );
+                                }
+                            }
+                            if resp.drag_started() {
+                                if let (Some(h), Some(p)) = (&handle, v.path.clone()) {
+                                    let dbg = std::env::var("OPENDOWN_WINDEBUG").is_ok();
+                                    if dbg {
+                                        if let Ok(mut f) = std::fs::OpenOptions::new()
+                                            .create(true)
+                                            .append(true)
+                                            .open(data_dir().join("win.log"))
+                                        {
+                                            use std::io::Write as _;
+                                            let _ = writeln!(f, "DRAG START {:?}", p);
+                                        }
+                                    }
+                                    let dres = drag::start_drag(
+                                        h,
+                                        drag::DragItem::Files(vec![p]),
+                                        drag::Image::Raw(DRAG_ICON.to_vec()),
+                                        |r, pos| {
+                                            if std::env::var("OPENDOWN_WINDEBUG").is_ok() {
+                                                if let Ok(mut f) = std::fs::OpenOptions::new()
+                                                    .create(true)
+                                                    .append(true)
+                                                    .open(data_dir().join("win.log"))
+                                                {
+                                                    use std::io::Write as _;
+                                                    let _ = writeln!(
+                                                        f,
+                                                        "DRAG RESULT {:?} at {:?}",
+                                                        r, pos
+                                                    );
+                                                }
+                                            }
+                                        },
+                                        drag::Options::default(),
+                                    );
+                                    if dbg {
+                                        if let Ok(mut f) = std::fs::OpenOptions::new()
+                                            .create(true)
+                                            .append(true)
+                                            .open(data_dir().join("win.log"))
+                                        {
+                                            use std::io::Write as _;
+                                            let _ = writeln!(f, "DRAG END ok={}", dres.is_ok());
+                                        }
+                                    }
+                                }
+                            }
+                            ui.add_space(12.0);
+                            ui.vertical(|ui| {
+                                ui.strong("Download complete");
+                                ui.label(&v.filename);
+                                if v.size.is_some() {
+                                    ui.label(human_size(v.size));
+                                }
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Drag the icon to a folder to copy the file.",
+                                    )
+                                    .small()
+                                    .weak(),
+                                );
+                            });
+                        });
+                        ui.add_space(10.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Open").clicked() {
+                                let _ = tx.send((key, DlAct::Open));
+                                ctx.request_repaint();
+                            }
+                            if ui.button("Open folder").clicked() {
+                                let _ = tx.send((key, DlAct::OpenFolder));
+                                ctx.request_repaint();
+                            }
+                            if ui.button("Close").clicked() {
+                                let _ = tx.send((key, DlAct::Dismiss));
+                                ctx.request_repaint();
+                            }
+                        });
+                    });
+                    if ctx.input(|i| i.viewport().close_requested()) {
+                        let _ = tx.send((key, DlAct::Dismiss));
+                    }
+                },
+            );
+        }
+    }
+
+    let mut dacts: Vec<(usize, DlAct)> = Vec::new();
+    while let Ok(a) = app.dl_win_rx.try_recv() {
+        dacts.push(a);
+    }
+    for (key, a) in dacts {
+        let task = tasks.iter().find(|t| Arc::as_ptr(t) as usize == key).cloned();
+        let Some(t) = task else { continue };
+        match a {
+            DlAct::Pause => t.pause(),
+            DlAct::Resume => {
+                if *t.status.lock().unwrap() == Status::Error {
+                    t.start(true);
+                } else {
+                    t.resume();
+                }
+            }
+            DlAct::Stop => t.cancel(false),
+            DlAct::Hide => {
+                if let Some(s) = app.win_states.get_mut(&key) {
+                    s.progress_closed = true;
+                }
+            }
+            DlAct::Dismiss => {
+                if let Some(s) = app.win_states.get_mut(&key) {
+                    s.show_complete = false;
+                }
+            }
+            DlAct::Open => {
+                if let Some(p) = t.view().path {
+                    open_with_default(&p);
+                }
+            }
+            DlAct::OpenFolder => {
+                if let Some(p) = t.view().path {
+                    open_folder_select(&p);
+                }
+            }
+        }
+    }
+
+    app.win_states.retain(|k, _| live.contains(k));
+    app.win_prev.retain(|k, _| live.contains(k));
+}
+
 impl eframe::App for TurboApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // smoke auto-close for automated testing
@@ -2418,6 +3000,24 @@ impl eframe::App for TurboApp {
             }
         }
 
+        if std::env::var("OPENDOWN_WINDEBUG").is_ok() {
+            let n = ctx.input(|i| i.raw.events.len());
+            if n > 0 {
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(data_dir().join("win.log"))
+                {
+                    use std::io::Write as _;
+                    let _ = writeln!(f, "root events={}", n);
+                    let evs: Vec<String> = ctx
+                        .input(|i| i.raw.events.iter().map(|e| format!("{:?}", e)).collect());
+                    for e in &evs {
+                        let _ = writeln!(f, "  REV {}", e);
+                    }
+                }
+            }
+        }
         // system tray events (show / exit)
         while let Ok(msg) = self.tray_rx.try_recv() {
             match msg {
@@ -2470,6 +3070,8 @@ impl eframe::App for TurboApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         }
 
+        draw_popup_windows(self, ctx);
+
         self.poll_clipboard();
         self.mgr.tick_queue();
         self.track_transitions();
@@ -2480,7 +3082,11 @@ impl eframe::App for TurboApp {
             }
         }
         for job in jobs {
-            self.add_grab(job);
+            if self.mgr.cfg.confirm_downloads {
+                self.queue_confirm(job);
+            } else {
+                self.add_grab(job);
+            }
         }
         if self.last_hist.elapsed() > Duration::from_millis(500) {
             self.last_hist = Instant::now();

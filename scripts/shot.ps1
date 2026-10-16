@@ -1,3 +1,4 @@
+param([string]$Match = "*OpenDown*")
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
 using System;
@@ -22,7 +23,7 @@ $cb = [W+EnumProc]{
     $sb = New-Object System.Text.StringBuilder ($len+1)
     [W]::GetWindowText($h, $sb, $len+1) | Out-Null
     $t = $sb.ToString()
-    if (($t -like "*OpenDown*") -and [W]::IsWindowVisible($h)) {
+    if (($t -like $Match) -and [W]::IsWindowVisible($h)) {
       $r = New-Object W+RECT
       [W]::GetWindowRect($h, [ref]$r) | Out-Null
       [void]$found.Add([pscustomobject]@{H=$h; T=$t; Wd=($r.R-$r.L); Ht=($r.B-$r.T)})

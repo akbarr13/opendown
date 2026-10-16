@@ -35,6 +35,10 @@ first run (More info → Run anyway).
 - Detail panel for the selected download, Add-URL dialog, options, log pane, clipboard URL monitor
 - System tray: close/minimize hides to the tray and downloads keep running, with an
   optional "start with Windows" toggle
+- IDM-style popup windows for downloads: a **confirmation window** per grabbed file
+  (review/edit name and folder first), a **live progress window** for downloads in
+  flight, and a **"Download complete" window** — drag its file icon straight into
+  Explorer or any folder to save a copy
 - Original assets only: icons drawn in code, UI font **Varela Round** (SIL OFL)
 
 **CLI**
@@ -44,7 +48,9 @@ first run (More info → Run anyway).
 - Local endpoint (`127.0.0.1:10081`) plus a Chrome/Edge extension (Manifest V3)
 - Sniffs media/file requests, floating grab panel on pages, per-tab list in the popup,
   right-click "Download with OpenDown", IDM-style download takeover
-- Grabbed downloads carry referer + cookies and auto-start (toggleable)
+- Grabbed downloads carry referer + cookies; by default a confirmation window appears
+  first (turn off *"Show a confirmation window for grabbed downloads"* in Options to
+  auto-start instead)
 
 ## Browser extension
 
@@ -95,6 +101,7 @@ Config and task list live in `%APPDATA%\OpenDown\` (`config.json`, `tasks.json`)
 - Grabber end-to-end: extension payload → task created → downloaded file matches source (sha256)
 - Installer: silent install → files + registry verified → app smoke test → clean uninstall
 - Tray: `scripts/tray_test.sh` + `scripts/tray_sim.ps1` — hidden start, grabs still processed while hidden, simulated tray Show/Exit
+- Popup windows (E2E with real synthetic clicks): `scripts/popup_test.sh` — tray-start → grab → confirmation window → click Download → file downloaded (sha256) → "Download complete" window; plus the auto-start path when confirmation is off
 
 ## License
 
