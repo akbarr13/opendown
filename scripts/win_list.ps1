@@ -7,6 +7,8 @@ public class W4 {
   [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  public struct RECT { public int L,T,R,B; }
 }
 "@
 $found = New-Object System.Collections.ArrayList
@@ -20,7 +22,9 @@ $cb = [W4+EnumProc]{
     if ($t -like "*opendown*") {
       $pid2 = 0
       [void][W4]::GetWindowThreadProcessId($h, [ref]$pid2)
-      [void]$found.Add(("H={0} PID={1} VIS={2} '{3}'" -f $h, $pid2, [W4]::IsWindowVisible($h), $t))
+      $r = New-Object W4+RECT
+      [void][W4]::GetWindowRect($h, [ref]$r)
+      [void]$found.Add(("H={0} PID={1} VIS={2} POS=({3},{4}) '{5}'" -f $h, $pid2, [W4]::IsWindowVisible($h), $r.L, $r.T, $t))
     }
   }
   return $true

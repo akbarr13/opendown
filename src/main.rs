@@ -801,6 +801,184 @@ fn attach_console() {
 #[cfg(not(windows))]
 fn attach_console() {}
 
+// ---------------------------------------------------------------------------
+// Off-screen "tray hide". The window is moved off-screen and its taskbar
+// presence removed, but it stays WS_VISIBLE on purpose: hidden windows on
+// Windows stop receiving WM_PAINT, which would freeze eframe's update loop
+// (grabbed downloads would pile up unprocessed and tray menu clicks would be
+// ignored while hidden).
+// ---------------------------------------------------------------------------
+
+#[cfg(windows)]
+#[allow(dead_code)]
+mod win {
+    use std::sync::atomic::{AtomicI32, Ordering};
+
+    pub type HWND = *mut core::ffi::c_void;
+
+    #[repr(C)]
+    pub struct RECT {
+        pub left: i32,
+        pub top: i32,
+        pub right: i32,
+        pub bottom: i32,
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn EnumWindows(cb: extern "system" fn(HWND, isize) -> i32, lparam: isize) -> i32;
+        fn GetWindowTextW(hwnd: HWND, buf: *mut u16, max: i32) -> i32;
+        fn GetWindowTextLengthW(hwnd: HWND) -> i32;
+        fn GetWindowThreadProcessId(hwnd: HWND, pid: *mut u32) -> u32;
+        fn GetWindowRect(hwnd: HWND, rect: *mut RECT) -> i32;
+        fn SetWindowPos(hwnd: HWND, after: HWND, x: i32, y: i32, cx: i32, cy: i32, flags: u32)
+            -> i32;
+        fn GetWindowLongPtrW(hwnd: HWND, index: i32) -> isize;
+        fn SetWindowLongPtrW(hwnd: HWND, index: i32, value: isize) -> isize;
+        fn SetForegroundWindow(hwnd: HWND) -> i32;
+        fn GetShellWindow() -> HWND;
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentProcessId() -> u32;
+    }
+
+    const GWL_EXSTYLE: i32 = -20;
+    const WS_EX_TOOLWINDOW: isize = 0x80;
+    const SWP_NOSIZE: u32 = 0x0001;
+    const SWP_NOMOVE: u32 = 0x0002;
+    const SWP_NOZORDER: u32 = 0x0004;
+    const SWP_NOACTIVATE: u32 = 0x0010;
+    const SWP_FRAMECHANGED: u32 = 0x0020;
+    const OFFSCREEN: i32 = -32000;
+
+    static LAST_X: AtomicI32 = AtomicI32::new(220);
+    static LAST_Y: AtomicI32 = AtomicI32::new(140);
+
+    struct Finder {
+        pid: u32,
+        found: HWND,
+    }
+
+    extern "system" fn enum_cb(hwnd: HWND, lparam: isize) -> i32 {
+        unsafe {
+            let f = &mut *(lparam as *mut Finder);
+            let mut pid: u32 = 0;
+            GetWindowThreadProcessId(hwnd, &mut pid);
+            if pid == f.pid {
+                let n = GetWindowTextLengthW(hwnd);
+                if n > 0 {
+                    let mut buf = vec![0u16; n as usize + 1];
+                    GetWindowTextW(hwnd, buf.as_mut_ptr(), n + 1);
+                    let s = String::from_utf16_lossy(&buf[..n as usize]);
+                    if s.starts_with("OpenDown") {
+                        f.found = hwnd;
+                        return 0;
+                    }
+                }
+            }
+        }
+        1
+    }
+
+    fn main_window() -> Option<HWND> {
+        let mut f = Finder {
+            pid: unsafe { GetCurrentProcessId() },
+            found: core::ptr::null_mut(),
+        };
+        unsafe {
+            EnumWindows(enum_cb, &mut f as *mut Finder as isize);
+        }
+        if f.found.is_null() {
+            None
+        } else {
+            Some(f.found)
+        }
+    }
+
+    pub fn hide() {
+        if let Some(h) = main_window() {
+            unsafe {
+                let mut r = RECT {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                };
+                if GetWindowRect(h, &mut r) != 0 && r.left > OFFSCREEN + 1000 {
+                    LAST_X.store(r.left, Ordering::Relaxed);
+                    LAST_Y.store(r.top, Ordering::Relaxed);
+                }
+                let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
+                SetWindowLongPtrW(h, GWL_EXSTYLE, ex | WS_EX_TOOLWINDOW);
+                SetWindowPos(
+                    h,
+                    core::ptr::null_mut(),
+                    OFFSCREEN,
+                    OFFSCREEN,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                );
+                // don't leave keyboard focus on an invisible window
+                let shell = GetShellWindow();
+                if !shell.is_null() {
+                    SetForegroundWindow(shell);
+                }
+            }
+        }
+    }
+
+    pub fn show() {
+        if let Some(h) = main_window() {
+            unsafe {
+                let mut r = RECT {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                };
+                GetWindowRect(h, &mut r);
+                let offscreen = r.left <= OFFSCREEN + 1000;
+                let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
+                SetWindowLongPtrW(h, GWL_EXSTYLE, ex & !WS_EX_TOOLWINDOW);
+                if offscreen {
+                    let w = (r.right - r.left).max(200);
+                    let hgt = (r.bottom - r.top).max(150);
+                    let x = LAST_X.load(Ordering::Relaxed);
+                    let y = LAST_Y.load(Ordering::Relaxed);
+                    SetWindowPos(
+                        h,
+                        core::ptr::null_mut(),
+                        x,
+                        y,
+                        w,
+                        hgt,
+                        SWP_NOZORDER | SWP_FRAMECHANGED,
+                    );
+                } else {
+                    SetWindowPos(
+                        h,
+                        core::ptr::null_mut(),
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+                    );
+                }
+                SetForegroundWindow(h);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod win {
+    pub fn hide() {}
+    pub fn show() {}
+}
+
 fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
@@ -963,6 +1141,7 @@ struct TurboApp {
     tray_rx: std::sync::mpsc::Receiver<TrayMsg>,
     exit_now: bool,
     start_minimized: bool,
+    autoshow: Option<(Instant, u64)>,
     smoke: Option<(Instant, u64)>,
 }
 
@@ -975,6 +1154,10 @@ impl TurboApp {
         let add_conn = mgr.cfg.connections as i32;
         let clip = arboard::Clipboard::new().ok();
         let smoke = std::env::var("OPENDOWN_SMOKE_MS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(|ms| (Instant::now(), ms));
+        let autoshow = std::env::var("OPENDOWN_AUTOSHOW_MS")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
             .map(|ms| (Instant::now(), ms));
@@ -1031,6 +1214,7 @@ impl TurboApp {
             tray_rx,
             exit_now: false,
             start_minimized,
+            autoshow,
             smoke,
         };
         for _ in 0..app.mgr.tasks.len() {
@@ -2238,7 +2422,7 @@ impl eframe::App for TurboApp {
         while let Ok(msg) = self.tray_rx.try_recv() {
             match msg {
                 TrayMsg::Show => {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    win::show();
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                     ctx.request_repaint();
@@ -2249,14 +2433,23 @@ impl eframe::App for TurboApp {
                 }
             }
         }
+        // test hook: auto-show after N ms (OPENDOWN_AUTOSHOW_MS)
+        if let Some((start, ms)) = self.autoshow {
+            if start.elapsed().as_millis() as u64 >= ms {
+                self.autoshow = None;
+                win::show();
+            }
+        }
         // start-at-boot launches hidden ("--minimized")
         if self.start_minimized {
             self.start_minimized = false;
             if self.smoke.is_none() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                win::hide();
             }
         }
-        // close / minimize to tray
+        // close / minimize to tray. The window is moved off-screen but stays
+        // "visible" (WS_VISIBLE), so the egui loop keeps ticking and grabbed
+        // downloads keep being processed while OpenDown sits in the tray.
         if ctx.input(|i| i.viewport().close_requested())
             && !self.exit_now
             && self.smoke.is_none()
@@ -2264,7 +2457,7 @@ impl eframe::App for TurboApp {
             && self.mgr.cfg.minimize_to_tray
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            win::hide();
         }
         if ctx.input(|i| i.viewport().minimized) == Some(true)
             && !self.exit_now
@@ -2272,8 +2465,9 @@ impl eframe::App for TurboApp {
             && self.tray.is_some()
             && self.mgr.cfg.minimize_to_tray
         {
+            // move off-screen first, then un-minimize: it restores off-screen
+            win::hide();
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
 
         self.poll_clipboard();

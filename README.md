@@ -94,7 +94,7 @@ Config and task list live in `%APPDATA%\OpenDown\` (`config.json`, `tasks.json`)
 - HTTPS (native-tls) — sha256 verified
 - Grabber end-to-end: extension payload → task created → downloaded file matches source (sha256)
 - Installer: silent install → files + registry verified → app smoke test → clean uninstall
-- Tray: `scripts/tray_test.sh` — `--minimized` starts hidden, close-to-tray keeps the process alive
+- Tray: `scripts/tray_test.sh` + `scripts/tray_sim.ps1` — hidden start, grabs still processed while hidden, simulated tray Show/Exit
 
 ## License
 
